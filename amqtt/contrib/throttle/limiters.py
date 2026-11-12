@@ -15,6 +15,7 @@ class RateLimiter:
 
 @dataclass
 class Bucket:
+    """Store the current token count and last update time."""
     tokens: float
     last_updated: float
 
