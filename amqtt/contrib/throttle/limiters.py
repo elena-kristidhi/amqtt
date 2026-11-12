@@ -30,6 +30,12 @@ class TokenBucketRateLimiter(RateLimiter):
             max_tokens if max_tokens is not None else message_limit
         )
 
+        if message_limit <= 0 or time_window <= 0:
+            raise ValueError("Rate limit and time window must be positive")
+
+        if self.max_tokens <= 0:
+            raise ValueError("Maximum tokens must be positive")
+
         self.refill_rate = message_limit / time_window
 
         self.buckets: dict[str, Bucket] = {}
