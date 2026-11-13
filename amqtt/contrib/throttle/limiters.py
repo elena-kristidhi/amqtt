@@ -66,5 +66,30 @@ class TokenBucketRateLimiter(RateLimiter):
 
         return False
 
+class WindowRateLimiter(RateLimiter):
+    """Limits the rate at which messages can be published within a sliding time window"""
 
+    def __init__(self, message_limit: int, time_window: float):
+        super().__init__(message_limit, time_window)
 
+        if message_limit <= 0 or time_window <= 0:
+            raise ValueError("Rate limit and time window must be positive")
+
+        self.timestamps: dict[str, list[float]] = {}
+
+    def allow(self, client_id: str, *args, **kwargs) -> bool:
+        now = time.monotonic()
+
+        if client_id not in self.timestamps:
+            self.timestamps[client_id] = []
+
+        client_timestamps = self.timestamps[client_id]
+
+        while client_timestamps and now - client_timestamps[0] >= self.time_window:
+            client_timestamps.pop(0)
+
+        if len(client_timestamps) >= self.message_limit:
+            return False
+
+        client_timestamps.append(now)
+        return True

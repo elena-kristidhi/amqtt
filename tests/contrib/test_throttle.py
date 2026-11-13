@@ -3,21 +3,21 @@ import pytest
 
 from unittest.mock import patch
 
-from amqtt.contrib.throttle.limiters import RateLimiter, TokenBucketRateLimiter
+from amqtt.contrib.throttle.limiters import RateLimiter, TokenBucketRateLimiter, WindowRateLimiter
 
 
-class MyTestRateLimiter(RateLimiter):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.rate = 10
+#class MyTestRateLimiter(RateLimiter):
+    #def __init__(self, *args, **kwargs):
+        #super().__init__(*args, **kwargs)
+        #self.rate = 10
 
-    def allow(self, client_id: str, *args, **kwargs) -> bool:
-        return True
+    #def allow(self, client_id: str, *args, **kwargs) -> bool:
+        #return True
 
 
-@pytest.mark.asyncio
-async def test_window_limiter_single_client_allow():
-    """0 seconds - no tokens in bucket
+#@pytest.mark.asyncio
+#async def test_window_limiter_single_client_allow():
+"""0 seconds - no tokens in bucket
 4 seconds - 10 tokens in bucket
 8 seconds - 20 tokens in bucket
 client1, sent 20 messages, all would be approved
@@ -28,16 +28,15 @@ client1, sent 20 messages, all would be approved
 
 
 
-    rate_limiter = MyTestRateLimiter()
+    #rate_limiter = MyTestRateLimiter()
 
-    for i in range(10):
-        assert rate_limiter.allow("client1")
-        await asyncio.sleep(0.1)
+    #for i in range(10):
+        #assert rate_limiter.allow("client1")
+        #await asyncio.sleep(0.1)
 
-@pytest.mark.asyncio
-async def test_window_limiter_multiple_client_allow():
-    """
-    0 seconds - no tokens in bucket
+#@pytest.mark.asyncio
+#async def test_window_limiter_multiple_client_allow():
+"""0 seconds - no tokens in bucket
 4 seconds - 10 tokens in bucket
 8 seconds - 20 tokens in bucket
 client1, sent 20 messages, all would be approved
@@ -47,13 +46,13 @@ client2, sent 20 messages, all would be approved
 20 seconds - 20 tokens in bucket
     """
 
-    rate_limiter = WindowRateLimiter(...)
+    #rate_limiter = WindowRateLimiter(...)
 
-    for i in range(10):
-        assert rate_limiter.allow("client1")
-        await asyncio.sleep(0.1)
-        assert rate_limiter.allow("client2")
-        await asyncio.sleep(0.1)
+    #for i in range(10):
+        #assert rate_limiter.allow("client1")
+        #await asyncio.sleep(0.1)
+        #assert rate_limiter.allow("client2")
+        #await asyncio.sleep(0.1)
 
 # additional test scenarios...
 """
@@ -194,3 +193,112 @@ def test_token_bucket_different_configuration():
         assert limiter.allow("client1") is True
         assert limiter.allow("client1") is True
         assert limiter.allow("client1") is False
+
+#Elena's sliding window tests start here
+def test_window_limiter_single_client_allow():
+    """A client can send messages up to its configured limit."""
+    limiter = WindowRateLimiter(3, 10)
+
+    with patch(
+        "amqtt.contrib.throttle.limiters.time.monotonic",
+        return_value=0,
+    ):
+        assert limiter.allow("client1") is True
+        assert limiter.allow("client1") is True
+        assert limiter.allow("client1") is True
+
+
+def test_window_limiter_denied_messages():
+    """Messages are denied when the client reaches its limit."""
+    limiter = WindowRateLimiter(3, 10)
+
+    with patch(
+        "amqtt.contrib.throttle.limiters.time.monotonic",
+        return_value=0,
+    ):
+        for _ in range(3):
+            assert limiter.allow("client1") is True
+
+        assert limiter.allow("client1") is False
+
+
+def test_window_limiter_multiple_clients():
+    """Each client has an independent message limit."""
+    limiter = WindowRateLimiter(2, 10)
+
+    with patch(
+        "amqtt.contrib.throttle.limiters.time.monotonic",
+        return_value=0,
+    ):
+        assert limiter.allow("client1") is True
+        assert limiter.allow("client2") is True
+
+        assert limiter.allow("client1") is True
+        assert limiter.allow("client2") is True
+
+        assert limiter.allow("client1") is False
+        assert limiter.allow("client2") is False
+
+
+def test_window_limiter_expired_timestamps():
+    """Messages are allowed again after the previous window expires."""
+    limiter = WindowRateLimiter(2, 10)
+
+    with patch(
+        "amqtt.contrib.throttle.limiters.time.monotonic",
+        side_effect=[0, 0, 10, 10, 10],
+    ):
+        assert limiter.allow("client1") is True
+        assert limiter.allow("client1") is True
+
+        # The original timestamps have expired at t=10.
+        assert limiter.allow("client1") is True
+        assert limiter.allow("client1") is True
+
+        # The limit has been reached again.
+        assert limiter.allow("client1") is False
+
+
+def test_window_limiter_sliding_behavior():
+    """The rate limit is calculated using a moving time window."""
+    limiter = WindowRateLimiter(2, 10)
+
+    with patch(
+        "amqtt.contrib.throttle.limiters.time.monotonic",
+        side_effect=[0, 5, 10, 10],
+    ):
+        assert limiter.allow("client1") is True
+        assert limiter.allow("client1") is True
+
+        # The timestamp at t=0 has expired.
+        assert limiter.allow("client1") is True
+
+        # The timestamps at t=5 and t=10 are still in the window.
+        assert limiter.allow("client1") is False
+
+
+def test_window_limiter_exact_boundary():
+    """A timestamp exactly one time window old is expired."""
+    limiter = WindowRateLimiter(1, 10)
+
+    with patch(
+        "amqtt.contrib.throttle.limiters.time.monotonic",
+        side_effect=[0, 10],
+    ):
+        assert limiter.allow("client1") is True
+        assert limiter.allow("client1") is True
+
+
+@pytest.mark.parametrize(
+    "message_limit, time_window",
+    [
+        (0, 10),
+        (-1, 10),
+        (10, 0),
+        (10, -1),
+    ],
+)
+def test_window_limiter_invalid_configuration(message_limit, time_window):
+    """Invalid rate limits and time windows raise ValueError."""
+    with pytest.raises(ValueError):
+        WindowRateLimiter(message_limit, time_window)
